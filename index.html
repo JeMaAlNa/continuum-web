@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#141718">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="description" content="A private music player for your own audio files.">
+<title>Continuum Web</title>
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="./icon-192.png">
+<link rel="icon" href="./icon-192.png">
+<link rel="stylesheet" href="./player.css?v=5">
+<script defer src="./tags.js?v=5"></script>
+<script defer src="./player.js?v=5"></script>
+</head>
+<body>
+<div id="continuum-web">
+  <section class="cp-phone" aria-label="Continuum Web music player">
+    <header class="cp-head">
+      <div><div class="cp-brand">CONTINUUM</div><div class="cp-small">Your music, in order</div></div>
+      <button type="button" id="import" disabled>＋ Import</button>
+      <input id="files" type="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.flac,.aiff,.aif,.ogg,.opus,.caf" multiple hidden>
+    </header>
+    <main class="cp-main">
+      <div class="cp-media">
+        <div class="cp-cover" id="cover"><img id="cover-image" src="./icon-192.png" alt=""><span id="cover-note">No track selected</span></div>
+        <div class="cp-lyrics-panel" id="lyrics-panel" hidden><div class="cp-lyrics" id="lyrics" role="region" tabindex="0" aria-label="Embedded lyrics">Choose a track to see its lyrics.</div></div>
+        <button type="button" class="cp-media-toggle" id="media-toggle" aria-label="Show lyrics" title="Show lyrics" aria-controls="cover lyrics-panel">
+          <span>
+            <svg id="lyrics-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 10h12M4 14h16M4 18h10"/></svg>
+            <svg id="art-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" hidden><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m3 17 5-5 4 4 3-3 6 6"/></svg>
+          </span>
+        </button>
+      </div>
+      <div class="cp-current">
+        <div><div class="cp-small">NOW PLAYING</div><h2 id="title">No track selected</h2><div class="cp-small" id="subtitle">Import audio from Files</div></div>
+        <button type="button" class="cp-icon" id="bookmark" aria-label="Set resume marker" title="Set resume marker" disabled><svg width="18" height="20" viewBox="0 0 18 20" fill="none" aria-hidden="true"><path d="M4 3h10v14l-5-3-5 3z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></button>
+      </div>
+      <input type="range" min="0" max="1" value="0" step="0.1" id="seek" aria-label="Playback position" disabled>
+      <div class="cp-time cp-small"><span id="elapsed">0:00</span><span id="duration">0:00</span></div>
+      <div class="cp-controls">
+        <button type="button" class="cp-icon" id="prev" aria-label="Previous track" disabled>│◀</button>
+        <button type="button" class="cp-play" id="play" aria-label="Play" disabled>▶</button>
+        <button type="button" class="cp-icon" id="next" aria-label="Next track" disabled>▶│</button>
+      </div>
+      <button type="button" id="resume" class="cp-resume" hidden>▶ Resume playlist</button>
+      <div class="cp-list-head">
+        <div><h3>Playlist</h3><span class="cp-small" id="count">0 tracks</span></div>
+        <button type="button" id="playlist-options" aria-haspopup="dialog" aria-controls="playlist-menu">⋯ Playlist options</button>
+      </div>
+      <div class="cp-list" id="playlist"></div>
+      <div class="cp-message" id="status" role="status">Opening your library…</div>
+      <details class="cp-help"><summary>Add to your iPhone Home Screen</summary><p>In Safari, tap Share, then Add to Home Screen. Imported music stays on this device. Keep the original files in Files.</p></details>
+    </main>
+    <dialog id="playlist-menu" aria-labelledby="playlist-menu-title">
+      <h3 id="playlist-menu-title">Playlist options</h3>
+      <button type="button" id="shuffle-now" disabled>Shuffle playlist</button>
+      <button type="button" id="restore-order" disabled>Restore previous order</button>
+      <button type="button" id="repeat-playlist" aria-pressed="false">Repeat playlist: Off</button>
+      <form method="dialog"><button>Done</button></form>
+    </dialog>
+    <dialog id="track-menu"><h3 id="menu-title">Track options</h3>
+      <button type="button" id="move-up">Move up</button><button type="button" id="move-down">Move down</button>
+      <button type="button" id="mark-track">Set resume marker</button><button type="button" id="remove-track">Remove from playlist</button>
+      <form method="dialog"><button>Done</button></form>
+    </dialog>
+    <audio id="audio" preload="metadata"></audio>
+  </section>
+</div>
+</body>
+</html>
+
