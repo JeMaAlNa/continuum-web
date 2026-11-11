@@ -1,6 +1,6 @@
 "use strict";
-const cacheName = "continuum-web-v5";
-const assets = ["./", "./index.html", "./player.css?v=5", "./tags.js?v=5", "./player.js?v=5", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
+const cacheName = "continuum-web-v7";
+const assets = ["./", "./index.html", "./player.css?v=7", "./tags.js?v=7", "./player.js?v=7", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(cacheName).then((cache) => cache.addAll(assets)));
 });

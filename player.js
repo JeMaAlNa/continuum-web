@@ -238,6 +238,11 @@ function savePosition(force = false) {
 }
 
 byId("import").onclick = () => byId("files").click();
+async function fingerprint(file) {
+  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 byId("files").onchange = async (event) => {
   const files = Array.from(event.target.files);
   event.target.value = "";
@@ -245,20 +250,34 @@ byId("files").onchange = async (event) => {
   const button = byId("import");
   button.disabled = true;
   status("Saving music to this device…");
-  const added = files.filter((file) => file.size && (file.type.startsWith("audio/") || /\.(mp3|m4a|aac|wav|flac|aiff?|ogg|opus|caf)$/i.test(file.name))).map((file) => ({
+  const candidates = files.filter((file) => file.size && (file.type.startsWith("audio/") || /\.(mp3|m4a|aac|wav|flac|aiff?|ogg|opus|caf)$/i.test(file.name))).map((file) => ({
     id: crypto.randomUUID ? crypto.randomUUID() : Date.now() + "-" + Math.random().toString(36).slice(2),
     title: file.name.replace(/\.[^.]+$/, "") || file.name,
     file
   }));
   try {
-    if (!added.length) { status("Choose an audio file such as an MP3 or M4A."); return; }
+    if (!candidates.length) { status("Choose an audio file such as an MP3 or M4A."); return; }
+    const added = [];
+    let duplicates = 0;
+    for (const candidate of candidates) {
+      candidate.fingerprint = await fingerprint(candidate.file);
+      let duplicate = false;
+      for (const existing of [...tracks, ...added]) {
+        if (existing.file.size !== candidate.file.size) continue;
+        existing.fingerprint ||= await fingerprint(existing.file);
+        if (existing.fingerprint === candidate.fingerprint) { duplicate = true; break; }
+      }
+      if (duplicate) duplicates++;
+      else added.push(candidate);
+    }
+    if (!added.length) { status("Already in your playlist. Duplicate songs were skipped."); return; }
     await changeFiles((store) => added.forEach((track) => store.add(track)));
     tracks.push(...added);
     if (!resumeId) resumeId = tracks[0].id;
     save();
     if (!currentId) select(resumeId, { follow: true, at: resumeTime });
     render();
-    status("Added " + added.length + (added.length === 1 ? " track." : " tracks.") + (added.length < files.length ? " Other files were skipped." : ""));
+    status("Added " + added.length + (added.length === 1 ? " track." : " tracks.") + (duplicates ? " Skipped " + duplicates + " duplicate(s)." : "") + (candidates.length < files.length ? " Other files were skipped." : ""));
   } catch {
     status("Could not save these files. Check available space and try a smaller batch.");
   } finally { button.disabled = false; }
@@ -270,11 +289,16 @@ byId("play").onclick = () => {
   else audio.pause();
 };
 byId("resume").onclick = resume;
-byId("next").onclick = advance;
-byId("prev").onclick = () => {
+byId("next").onclick = () => skipTrack(1);
+function skipTrack(direction) {
+  const playing = !audio.paused && !audio.ended;
   const index = tracks.findIndex((track) => track.id === currentId);
-  const track = tracks[Math.max(0, index - 1)];
-  if (track) select(track.id, { play: true });
+  const nextIndex = direction > 0 ? (index + 1) % tracks.length : Math.max(0, index - 1);
+  const track = tracks[nextIndex];
+  if (track) select(track.id, { play: playing, follow: following });
+}
+byId("prev").onclick = () => {
+  skipTrack(-1);
 };
 byId("bookmark").onclick = () => { if (currentId) setMarker(currentId); };
 
