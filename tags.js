@@ -71,6 +71,7 @@ const ContinuumTags = (() => {
       if (!frame.length) continue;
       const encoding = frame[0];
       if (key === "TIT2" || key === "TT2") result.title ||= decode(frame.subarray(1), encoding);
+      if (key === "TALB" || key === "TAL") result.album ||= decode(frame.subarray(1), encoding);
       if (key === "TPE1" || key === "TP1") result.artist ||= decode(frame.subarray(1), encoding);
       if (key === "USLT" || key === "ULT") {
         const end = terminator(frame, 4, encoding);
@@ -104,7 +105,7 @@ const ContinuumTags = (() => {
 
   function mp4Items(bytes, start, end, result, depth = 0) {
     if (depth > 5) return;
-    const fields = { "©nam": "title", "©ART": "artist", "©lyr": "lyrics" };
+    const fields = { "©nam": "title", "©ART": "artist", "©alb": "album", "©lyr": "lyrics" };
     for (let offset = start; offset < end;) {
       const item = box(bytes, offset, end);
       if (!item) break;
@@ -155,7 +156,7 @@ const ContinuumTags = (() => {
       if (size > bytes.length - offset) break;
       const comment = utf8.decode(bytes.subarray(offset, offset + size));
       offset += size;
-      const match = /^(TITLE|ARTIST|LYRICS|UNSYNCEDLYRICS)=([\s\S]*)$/i.exec(comment);
+      const match = /^(TITLE|ARTIST|ALBUM|LYRICS|UNSYNCEDLYRICS)=([\s\S]*)$/i.exec(comment);
       if (!match) continue;
       const field = match[1].toLowerCase();
       result[field === "unsyncedlyrics" ? "lyrics" : field] ||= clean(match[2]);

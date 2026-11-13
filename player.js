@@ -7,6 +7,16 @@ const seek = byId("seek");
 const menu = byId("track-menu");
 const stateKey = "continuum-web-playlist-v1";
 let tracks = [];
+let removedTracks = [];
+let savedPlaylists = [];
+let playlistName = "Playlist";
+let shuffleOnLoop = false;
+let libraryView = "active";
+let libraryBusy = false;
+let searchText = "";
+let drag = null;
+const newId = () => crypto.randomUUID ? crypto.randomUUID() : Date.now() + "-" + Math.random().toString(36).slice(2);
+const library = () => [...tracks, ...removedTracks];
 let database, sourceUrl, currentId, menuId, resumeId;
 let resumeTime = 0;
 let orderBeforeShuffle = null;
@@ -56,7 +66,7 @@ function changeFiles(change) {
 function save() {
   try {
     localStorage.setItem(stateKey, JSON.stringify({
-      order: tracks.map((track) => track.id), resumeId, resumeTime, orderBeforeShuffle, repeatPlaylist
+      order: tracks.map((track) => track.id), resumeId, resumeTime, orderBeforeShuffle, repeatPlaylist, shuffleOnLoop, savedPlaylists, playlistName
     }));
   } catch {
     status("Continuum could not save the playlist position.");
@@ -80,52 +90,63 @@ function renderPlay() {
 }
 
 function render() {
-  const active = tracks.find((track) => track.id === currentId);
+  const active = library().find((track) => track.id === currentId);
   byId("title").textContent = active ? trackTags.title || active.title : "No track selected";
-  byId("subtitle").textContent = active ? trackTags.artist || "From Files" : "Choose music from Files to begin";
+  byId("subtitle").textContent = active ? trackTags.artist || active.artist || "From Files" : "Choose music from Files to begin";
+  byId("playlist-name").textContent = playlistName;
   byId("count").textContent = tracks.length + (tracks.length === 1 ? " track" : " tracks");
+  byId("active-tab").setAttribute("aria-pressed", String(libraryView === "active"));
+  byId("removed-tab").setAttribute("aria-pressed", String(libraryView === "removed"));
+  byId("removed-tab").textContent = "Removed (" + removedTracks.length + ")";
   renderPlaylistOptions();
-  for (const id of ["play", "prev", "next", "bookmark"]) byId(id).disabled = !tracks.length;
+  for (const id of ["prev", "next"]) byId(id).disabled = !tracks.length;
+  byId("play").disabled = !active && !tracks.length;
+  byId("bookmark").disabled = !tracks.some(t => t.id === currentId);
   byId("resume").hidden = !resumeId;
   const fragment = document.createDocumentFragment();
-  tracks.forEach((track, index) => {
+  const source = libraryView === "active" ? tracks : removedTracks;
+  const query = searchText.trim().toLocaleLowerCase();
+  source.forEach((track, index) => {
+    if (query && ![track.title, track.artist, track.album, track.file.name].filter(Boolean).join(" ").toLocaleLowerCase().includes(query)) return;
     const row = document.createElement("div");
     row.className = "cp-row";
-    if (track.id === resumeId) {
+    row.dataset.trackId = track.id;
+    if (libraryView === "active" && track.id === resumeId) {
       const marker = document.createElement("div");
-      marker.className = "cp-marker";
-      marker.textContent = "RESUME HERE";
-      row.append(marker);
+      marker.className = "cp-marker"; marker.textContent = "RESUME HERE"; row.append(marker);
     }
+    const handle = document.createElement("button");
+    handle.type = "button"; handle.className = "cp-drag"; handle.textContent = "⠿";
+    handle.setAttribute("aria-label", "Drag to reorder " + track.title);
+    handle.disabled = libraryView !== "active" || Boolean(query) || libraryBusy;
+    handle.onpointerdown = event => startDrag(event, track.id, handle);
     const button = document.createElement("button");
-    button.type = "button";
+    button.type = "button"; button.className = "cp-song";
     button.setAttribute("aria-pressed", String(track.id === currentId));
-    const number = document.createElement("span");
-    number.className = "cp-index";
-    number.textContent = String(index + 1).padStart(2, "0");
-    const title = document.createElement("span");
-    title.className = "cp-track";
-    title.textContent = track.title;
-    button.append(number, title);
-    button.onclick = () => select(track.id, { play: true });
-    const options = document.createElement("button");
-    options.type = "button";
-    options.className = "cp-menu";
-    options.textContent = "⋯";
-    options.setAttribute("aria-label", "Options for " + track.title);
+    const number = document.createElement("span"); number.className = "cp-index"; number.textContent = String(index + 1).padStart(2, "0");
+    const details = document.createElement("span"); details.className = "cp-track";
+    const title = document.createElement("span"); title.textContent = track.title; details.append(title);
+    const subtitle = document.createElement("small"); subtitle.textContent = [track.artist, track.album].filter(Boolean).join(" · ") || track.file.name || "Audio file"; details.append(subtitle);
+    button.append(number, details);
+    button.onclick = () => { if (!libraryBusy && libraryView === "active") select(track.id, {play:true}); };
+    button.disabled = libraryView === "removed";
+    const options = document.createElement("button"); options.type = "button"; options.className = "cp-menu";
+    options.textContent = libraryView === "active" ? "⋯" : "＋";
+    options.setAttribute("aria-label", (libraryView === "active" ? "Options for " : "Restore ") + track.title);
     options.onclick = () => {
-      menuId = track.id;
-      byId("menu-title").textContent = track.title;
-      byId("move-up").disabled = index === 0;
-      byId("move-down").disabled = index === tracks.length - 1;
-      menu.showModal();
+      if (libraryBusy) return;
+      if (libraryView === "removed") { restoreTrack(track.id); return; }
+      menuId = track.id; byId("menu-title").textContent = track.title;
+      byId("move-up").disabled = index === 0; byId("move-down").disabled = index === tracks.length - 1; menu.showModal();
     };
-    row.append(button, options);
-    fragment.append(row);
+    row.append(handle, button, options); fragment.append(row);
   });
-  playlist.replaceChildren(fragment);
-  renderTime();
-  renderPlay();
+  if (!fragment.childNodes.length) {
+    const empty = document.createElement("p"); empty.className = "cp-small";
+    empty.textContent = query ? "No matching songs." : libraryView === "removed" ? "Removed songs will appear here. Tap ＋ to restore one." : "Import music to start your playlist.";
+    fragment.append(empty);
+  }
+  playlist.replaceChildren(fragment); renderTime(); renderPlay();
 }
 
 function play() {
@@ -168,6 +189,8 @@ async function loadTags(file) {
   try { tags = await ContinuumTags.parse(file); } catch {}
   if (request !== metadataRequest) return;
   showTags(tags);
+  const track = library().find(t => t.id === currentId);
+  if (track) { applyDetails(track, tags); persistDetails(track).catch(() => {}); if (!drag) render(); }
   byId("title").textContent = tags.title || tracks.find((track) => track.id === currentId)?.title || "";
   byId("subtitle").textContent = tags.artist || "From Files";
 }
@@ -184,7 +207,8 @@ byId("cover-image").onerror = () => {
 };
 
 function select(id, options = {}) {
-  const track = tracks.find((item) => item.id === id);
+  savePosition(true);
+  const track = library().find((item) => item.id === id);
   if (!track) return;
   const oldUrl = sourceUrl;
   following = Boolean(options.follow);
@@ -223,6 +247,7 @@ function advance() {
   const next = tracks[index + 1];
   if (next) select(next.id, { play: true, follow: true });
   else if (tracks.length) {
+    if (repeatPlaylist && shuffleOnLoop) shufflePlaylist();
     select(tracks[0].id, { follow: true, play: repeatPlaylist });
     if (!repeatPlaylist) status("End of playlist");
   }
@@ -246,7 +271,8 @@ async function fingerprint(file) {
 byId("files").onchange = async (event) => {
   const files = Array.from(event.target.files);
   event.target.value = "";
-  if (!files.length) return;
+  if (!files.length || libraryBusy) return;
+  libraryBusy = true;
   const button = byId("import");
   button.disabled = true;
   status("Saving music to this device…");
@@ -258,29 +284,37 @@ byId("files").onchange = async (event) => {
   try {
     if (!candidates.length) { status("Choose an audio file such as an MP3 or M4A."); return; }
     const added = [];
+    const restored = [];
     let duplicates = 0;
     for (const candidate of candidates) {
       candidate.fingerprint = await fingerprint(candidate.file);
       let duplicate = false;
-      for (const existing of [...tracks, ...added]) {
+      for (const existing of [...library(), ...added]) {
         if (existing.file.size !== candidate.file.size) continue;
         existing.fingerprint ||= await fingerprint(existing.file);
-        if (existing.fingerprint === candidate.fingerprint) { duplicate = true; break; }
+        if (existing.fingerprint === candidate.fingerprint) {
+          duplicate = true;
+          if (existing.removed && !restored.includes(existing)) restored.push(existing);
+          break;
+        }
       }
       if (duplicate) duplicates++;
       else added.push(candidate);
     }
-    if (!added.length) { status("Already in your playlist. Duplicate songs were skipped."); return; }
-    await changeFiles((store) => added.forEach((track) => store.add(track)));
-    tracks.push(...added);
+    if (!added.length && !restored.length) { status("Already in your playlist. Duplicate songs were skipped."); return; }
+    await changeFiles((store) => { added.forEach(track => store.add(track)); restored.forEach(track => store.put({...track, removed:false})); });
+    for (const track of restored) track.removed = false;
+    removedTracks = removedTracks.filter(track => !restored.includes(track));
+    tracks.push(...added, ...restored);
     if (!resumeId) resumeId = tracks[0].id;
     save();
     if (!currentId) select(resumeId, { follow: true, at: resumeTime });
     render();
-    status("Added " + added.length + (added.length === 1 ? " track." : " tracks.") + (duplicates ? " Skipped " + duplicates + " duplicate(s)." : "") + (candidates.length < files.length ? " Other files were skipped." : ""));
+    indexDetails(added);
+    status((restored.length ? "Restored " + restored.length + " removed track(s). " : "") + "Added " + added.length + (added.length === 1 ? " track." : " tracks.") + (duplicates ? " Skipped " + duplicates + " duplicate(s)." : "") + (candidates.length < files.length ? " Other files were skipped." : ""));
   } catch {
     status("Could not save these files. Check available space and try a smaller batch.");
-  } finally { button.disabled = false; }
+  } finally { libraryBusy = false; button.disabled = false; render(); }
 };
 
 byId("play").onclick = () => {
@@ -308,6 +342,9 @@ function renderPlaylistOptions() {
   const repeat = byId("repeat-playlist");
   repeat.setAttribute("aria-pressed", String(repeatPlaylist));
   repeat.textContent = "Repeat playlist: " + (repeatPlaylist ? "On" : "Off");
+  byId("shuffle-loop").setAttribute("aria-pressed", String(shuffleOnLoop));
+  byId("shuffle-loop").textContent = "Shuffle on loop: " + (shuffleOnLoop ? "On" : "Off");
+  byId("sort-az").disabled = tracks.length < 2;
 }
 
 function shufflePlaylist() {
@@ -325,7 +362,7 @@ function shufflePlaylist() {
 }
 
 function restorePlaylistOrder() {
-  if (!orderBeforeShuffle) return;
+  if (libraryBusy || !orderBeforeShuffle) return;
   sortByOrder(orderBeforeShuffle);
   orderBeforeShuffle = null;
   save();
@@ -340,7 +377,7 @@ function sortByOrder(order) {
 
 const playlistMenu = byId("playlist-menu");
 byId("playlist-options").onclick = () => { renderPlaylistOptions(); playlistMenu.showModal(); };
-byId("shuffle-now").onclick = () => { shufflePlaylist(); playlistMenu.close(); };
+byId("shuffle-now").onclick = () => { if (libraryBusy) return; shufflePlaylist(); playlistMenu.close(); };
 byId("restore-order").onclick = () => { restorePlaylistOrder(); playlistMenu.close(); };
 byId("repeat-playlist").onclick = () => {
   repeatPlaylist = !repeatPlaylist;
@@ -384,6 +421,7 @@ window.addEventListener("pagehide", () => savePosition(true));
 document.addEventListener("visibilitychange", () => { if (document.hidden) savePosition(true); });
 
 function move(delta) {
+  if (libraryBusy) return;
   const index = tracks.findIndex((track) => track.id === menuId);
   if (index < 0 || !tracks[index + delta]) return;
   [tracks[index], tracks[index + delta]] = [tracks[index + delta], tracks[index]];
@@ -395,38 +433,33 @@ byId("move-up").onclick = () => move(-1);
 byId("move-down").onclick = () => move(1);
 byId("mark-track").onclick = () => { setMarker(menuId); menu.close(); };
 byId("remove-track").onclick = async () => {
-  const id = menuId;
-  menu.close();
+  if (libraryBusy) return;
+  const track = tracks.find(t => t.id === menuId);
+  menu.close(); if (!track) return;
+  libraryBusy = true;
   try {
-    await changeFiles((store) => store.delete(id));
-    tracks = tracks.filter((track) => track.id !== id);
-    if (resumeId === id) { resumeId = tracks[0]?.id; resumeTime = 0; }
-    if (currentId === id) {
-      following = false;
-      currentId = undefined;
-      loadTags();
-      audio.pause();
-      audio.removeAttribute("src");
-      audio.load();
-      if (sourceUrl) URL.revokeObjectURL(sourceUrl);
-      sourceUrl = undefined;
-      if (resumeId) select(resumeId, { follow: true, at: resumeTime });
-    }
-    save();
-    render();
-    status("Removed from Continuum.");
+    await changeFiles(store => store.put({...track, removed:true}));
+    track.removed = true; tracks = tracks.filter(t => t !== track); removedTracks.push(track);
+    if (resumeId === track.id) { resumeId = tracks[0]?.id; resumeTime = 0; following = false; }
+    save(); render(); status("Moved to Removed. You can restore it without importing again.");
   } catch { status("Could not remove the track. Try again."); }
+  finally { libraryBusy = false; }
 };
 
 async function initialize() {
   try {
     database = await openLibrary();
-    tracks = await listFiles();
+    const stored = await listFiles();
+    tracks = stored.filter(t => !t.removed);
+    removedTracks = stored.filter(t => t.removed);
     let saved = {};
     try { saved = JSON.parse(localStorage.getItem(stateKey)) || {}; } catch {}
     sortByOrder(Array.isArray(saved.order) ? saved.order : []);
     orderBeforeShuffle = Array.isArray(saved.orderBeforeShuffle) && saved.orderBeforeShuffle.length ? saved.orderBeforeShuffle : null;
     repeatPlaylist = saved.repeatPlaylist === true;
+    shuffleOnLoop = saved.shuffleOnLoop === true;
+    savedPlaylists = Array.isArray(saved.savedPlaylists) ? saved.savedPlaylists.filter(validPlaylist) : [];
+    playlistName = typeof saved.playlistName === "string" ? saved.playlistName : "Playlist";
     if (tracks.length) {
       resumeId = tracks.some((track) => track.id === saved.resumeId) ? saved.resumeId : tracks[0].id;
       resumeTime = resumeId === saved.resumeId && Number.isFinite(saved.resumeTime) ? Math.max(0, saved.resumeTime) : 0;
@@ -434,8 +467,302 @@ async function initialize() {
     } else status("No music yet. Tap Import to add your first tracks.");
     byId("import").disabled = false;
     render();
+    indexDetails(library());
   } catch { status("Continuum could not open device storage. Try Safari outside Private Browsing."); }
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
 }
-initialize();
 
+
+// Library metadata is scanned one file at a time to keep artwork memory bounded.
+function persistDetails(track) {
+  return changeFiles(store => {
+    const request = store.get(track.id);
+    request.onsuccess = () => {
+      if (request.result) store.put({...request.result,title:track.title,artist:track.artist,album:track.album,detailsRead:true});
+    };
+  });
+}
+function applyDetails(track, tags) {
+  if (tags.title) track.title = tags.title;
+  track.artist = tags.artist || "";
+  track.album = tags.album || "";
+  track.detailsRead = true;
+}
+let detailQueue = Promise.resolve();
+function indexDetails(items) {
+  detailQueue = detailQueue.then(async () => {
+    let scanned = 0;
+    for (const track of items) {
+      if (track.detailsRead) continue;
+      try {
+        applyDetails(track, await ContinuumTags.parse(track.file));
+        await persistDetails(track);
+      } catch { continue; }
+      if (!drag && ++scanned % 8 === 0) render();
+    }
+    if (!drag) render();
+  }).catch(() => {});
+  return detailQueue;
+}
+byId("search").oninput = event => { searchText = event.target.value; render(); };
+byId("active-tab").onclick = () => { libraryView = "active"; render(); };
+byId("removed-tab").onclick = () => { libraryView = "removed"; render(); };
+byId("sort-az").onclick = () => {
+  if (libraryBusy) return;
+  orderBeforeShuffle ||= tracks.map(t => t.id);
+  tracks.sort((a,b) => a.title.localeCompare(b.title, undefined, {numeric:true,sensitivity:"base"}));
+  save(); render(); playlistMenu.close(); status("Playlist sorted A–Z. Restore previous order will undo the sort.");
+};
+byId("shuffle-loop").onclick = () => {
+  shuffleOnLoop = !shuffleOnLoop;
+  if (shuffleOnLoop) repeatPlaylist = true;
+  save(); renderPlaylistOptions();
+};
+async function restoreTrack(id) {
+  if (libraryBusy) return;
+  const track = removedTracks.find(t => t.id === id); if (!track) return;
+  libraryBusy = true;
+  try {
+    await changeFiles(store => store.put({...track, removed:false}));
+    track.removed = false; removedTracks = removedTracks.filter(t => t !== track); tracks.push(track);
+    if (!resumeId) { resumeId = track.id; resumeTime = 0; }
+    save(); render(); status("Song restored to the end of your playlist.");
+  } catch { status("Could not restore this song. Try again."); }
+  finally { libraryBusy = false; render(); }
+}
+
+// Pointer capture is confined to the handle; the rest of each row scrolls normally.
+function startDrag(event, id, handle) {
+  if (libraryBusy || searchText.trim() || libraryView !== "active" || event.isPrimary === false || event.button > 0) return;
+  event.preventDefault();
+  const row = handle.closest(".cp-row");
+  drag = {id, target:id, x:event.clientX, y:event.clientY, handle, row, before:false, frame:0};
+  handle.setPointerCapture(event.pointerId);
+  row.classList.add("cp-dragging");
+  handle.onpointermove = e => { if (drag) { drag.x = e.clientX; drag.y = e.clientY; updateDrop(e.clientX, e.clientY); } };
+  handle.onpointerup = () => endDrag(true);
+  handle.onpointercancel = () => endDrag(false);
+  handle.onlostpointercapture = () => endDrag(false);
+  function scroll() {
+    if (!drag) return;
+    const edge = 75, height = window.innerHeight;
+    const delta = drag.y < edge ? -Math.ceil((edge-drag.y)/6) : drag.y > height-edge ? Math.ceil((drag.y-height+edge)/6) : 0;
+    if (delta) { window.scrollBy(0, delta); updateDrop(drag.x, drag.y); }
+    drag.frame = requestAnimationFrame(scroll);
+  }
+  drag.frame = requestAnimationFrame(scroll);
+}
+function updateDrop(x,y) {
+  if (!drag) return;
+  document.querySelectorAll(".cp-drop-target").forEach(row => row.classList.remove("cp-drop-target"));
+  const target = document.elementFromPoint(x,y)?.closest(".cp-row");
+  if (!target || !target.dataset.trackId) return;
+  drag.target = target.dataset.trackId;
+  const bounds = target.getBoundingClientRect(); drag.before = y < bounds.top + bounds.height / 2;
+  if (drag.target !== drag.id) target.classList.add("cp-drop-target");
+}
+function reorderTrack(id, targetId, before) {
+  const from = tracks.findIndex(t => t.id === id);
+  if (from < 0 || targetId === id || !tracks.some(t => t.id === targetId)) return false;
+  const [track] = tracks.splice(from,1);
+  const to = tracks.findIndex(t => t.id === targetId);
+  tracks.splice(to + (before ? 0 : 1),0,track);
+  save(); return true;
+}
+function endDrag(commit) {
+  if (!drag) return;
+  const finished = drag; drag = null; cancelAnimationFrame(finished.frame);
+  if (commit && reorderTrack(finished.id, finished.target, finished.before)) status("Playlist order updated.");
+  render();
+}
+window.addEventListener("blur", () => endDrag(false));
+
+function validPlaylist(item) {
+  return item && typeof item.id === "string" && typeof item.name === "string" && Array.isArray(item.order) && item.order.every(id => typeof id === "string");
+}
+function snapshot(name = playlistName) {
+  savePosition(true);
+  return {id:newId(), name, order:tracks.map(t => t.id), resumeId, resumeTime};
+}
+function renderSaved(selected) {
+  const list = byId("saved-select"); list.replaceChildren();
+  for (const item of savedPlaylists) {
+    const option = document.createElement("option"); option.value = item.id; option.textContent = item.name; list.append(option);
+  }
+  if (selected) list.value = selected;
+  if (!list.value && savedPlaylists.length) list.value = savedPlaylists[0].id;
+  for (const id of ["saved-load","saved-update","saved-rename","saved-delete"]) byId(id).disabled = !savedPlaylists.length || libraryBusy;
+}
+byId("saved-open").onclick = () => { playlistMenu.close(); renderSaved(); byId("saved-menu").showModal(); };
+let renameId;
+function openName(id) {
+  renameId = id;
+  byId("name-title").textContent = id ? "Rename playlist" : "Save current playlist";
+  byId("playlist-input").value = id ? savedPlaylists.find(p => p.id === id)?.name || "" : playlistName === "Playlist" ? "" : playlistName;
+  byId("name-error").textContent = "";
+  byId("name-menu").showModal(); byId("playlist-input").focus();
+}
+byId("saved-new").onclick = () => openName();
+byId("saved-rename").onclick = () => openName(byId("saved-select").value);
+byId("name-cancel").onclick = () => byId("name-menu").close();
+byId("name-form").onsubmit = event => {
+  event.preventDefault();
+  const name = byId("playlist-input").value.trim().slice(0,80);
+  if (!name || savedPlaylists.some(p => p.id !== renameId && p.name.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+    byId("name-error").textContent = name ? "That name is already used. Choose another name." : "Enter a playlist name."; return;
+  }
+  let id = renameId;
+  if (id) { const item = savedPlaylists.find(p => p.id === id); if (playlistName === item.name) playlistName = name; item.name = name; }
+  else { const item = snapshot(name); savedPlaylists.push(item); id = item.id; playlistName = name; }
+  save(); renderSaved(id); render(); byId("name-menu").close(); status("Playlist saved.");
+};
+byId("saved-update").onclick = () => {
+  if (libraryBusy) return;
+  const item = savedPlaylists.find(p => p.id === byId("saved-select").value); if (!item) return;
+  if (!window.confirm('Update "' + item.name + '" with the current order and resume position?')) return;
+  Object.assign(item, {...snapshot(item.name), id:item.id});
+  save(); renderSaved(item.id); status("Saved playlist updated.");
+};
+byId("saved-delete").onclick = () => {
+  const id = byId("saved-select").value;
+  const item = savedPlaylists.find(p => p.id === id); if (!item) return;
+  if (!window.confirm('Delete saved playlist "' + item.name + '"? Your songs will be kept.')) return;
+  savedPlaylists = savedPlaylists.filter(p => p.id !== id); save(); renderSaved(); status("Saved playlist deleted. Songs were kept.");
+};
+async function loadArrangement(item) {
+  const all = library(), lookup = new Map(all.map(t => [t.id,t]));
+  const order = [...new Set(item.order)].filter(id => lookup.has(id));
+  const wanted = new Set(order);
+  await changeFiles(store => all.forEach(t => store.put({...t,removed:!wanted.has(t.id)})));
+  all.forEach(t => { t.removed = !wanted.has(t.id); });
+  tracks = order.map(id => lookup.get(id)); removedTracks = all.filter(t => t.removed);
+  following = false;
+  resumeId = wanted.has(item.resumeId) ? item.resumeId : tracks[0]?.id;
+  resumeTime = resumeId === item.resumeId && Number.isFinite(item.resumeTime) ? Math.max(0,item.resumeTime) : 0;
+  playlistName = item.name || "Playlist"; orderBeforeShuffle = null; libraryView = "active";
+  if (!currentId && resumeId) select(resumeId, {follow:true, at:resumeTime});
+  save(); render();
+  return item.order.length-order.length;
+}
+byId("saved-load").onclick = async () => {
+  if (libraryBusy) return;
+  const item = savedPlaylists.find(p => p.id === byId("saved-select").value); if (!item) return;
+  libraryBusy = true;
+  try {
+    const missing = await loadArrangement(item); byId("saved-menu").close();
+    status("Loaded " + item.name + "." + (missing ? " " + missing + " unavailable song(s) skipped." : ""));
+  } catch { status("Could not load this playlist. Try again."); }
+  finally { libraryBusy = false; render(); }
+};
+
+const backupMagic = "CONTINUUM-WEB-1\n";
+byId("backup-open").onclick = () => { playlistMenu.close(); byId("backup-menu").showModal(); };
+let downloadUrl;
+function download(blob, name) {
+  if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+  downloadUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a"); link.href = downloadUrl; link.download = name;
+  document.body.append(link); link.click(); link.remove();
+}
+async function exportBackup(full) {
+  if (libraryBusy) return;
+  libraryBusy = true; status("Preparing your backup…");
+  for (const id of ["backup-small","backup-full","backup-restore"]) byId(id).disabled = true;
+  try {
+    await detailQueue;
+    const all = library();
+    for (const t of all) t.fingerprint ||= await fingerprint(t.file);
+    const data = {format:"ContinuumWeb",version:1,full,created:new Date().toISOString(),current:snapshot(),savedPlaylists,
+      repeatPlaylist,shuffleOnLoop,tracks:all.map(t => ({id:t.id,title:t.title,artist:t.artist,album:t.album,removed:Boolean(t.removed),
+        fingerprint:t.fingerprint,name:t.file.name || t.title + ".audio",type:t.file.type,size:t.file.size}))};
+    const header = new TextEncoder().encode(JSON.stringify(data));
+    if (header.length > 16*1024*1024) throw new Error("Backup index too large");
+    const blob = full ? new Blob([backupMagic, String(header.length)+"\n",header,...all.map(t => t.file)],{type:"application/octet-stream"})
+      : new Blob([header],{type:"application/json"});
+    download(blob, "Continuum-" + (full ? "music" : "playlists") + "-" + new Date().toISOString().slice(0,10) + (full ? ".continuum" : ".json"));
+    status("Backup prepared. Save the download in Files.");
+  } catch { status("Could not create the backup. Try a playlist-only backup or free some space."); }
+  finally { libraryBusy = false; for (const id of ["backup-small","backup-full","backup-restore"]) byId(id).disabled = false; render(); }
+}
+byId("backup-small").onclick = () => exportBackup(false);
+byId("backup-full").onclick = () => exportBackup(true);
+byId("backup-restore").onclick = () => { if (!libraryBusy) byId("backup-file").click(); };
+async function readBackup(file) {
+  const prefix = await file.slice(0,80).text();
+  let data, offset = 0;
+  if (prefix.startsWith(backupMagic)) {
+    const end = prefix.indexOf("\n",backupMagic.length);
+    if (end < 0) throw new Error("Invalid header");
+    const digits = prefix.slice(backupMagic.length,end);
+    if (!/^\d+$/.test(digits)) throw new Error("Invalid length");
+    const length = Number(digits); offset = end+1;
+    if (length > 16*1024*1024 || offset+length > file.size) throw new Error("Invalid length");
+    data = JSON.parse(await file.slice(offset,offset+length).text()); offset += length;
+    if (data.full !== true) throw new Error("Invalid full backup");
+  } else {
+    if (file.size > 16*1024*1024) throw new Error("Backup too large");
+    data = JSON.parse(await file.text());
+    if (data.full !== false) throw new Error("Missing audio data");
+  }
+  if (!data || data.format !== "ContinuumWeb" || data.version !== 1 || !Array.isArray(data.tracks) || data.tracks.length > 50000 ||
+    !validPlaylist(data.current) || !Array.isArray(data.savedPlaylists) || data.savedPlaylists.length > 10000 || !data.savedPlaylists.every(validPlaylist)) throw new Error("Invalid backup");
+  const ids = new Set();
+  for (const t of data.tracks) {
+    if (!t || typeof t.id !== "string" || ids.has(t.id) || typeof t.title !== "string" ||
+      typeof t.name !== "string" || typeof t.type !== "string" || !/^[a-f0-9]{64}$/.test(t.fingerprint) || !Number.isSafeInteger(t.size) || t.size <= 0) throw new Error("Invalid song");
+    ids.add(t.id);
+    if (data.full) { if (t.size > file.size-offset) throw new Error("Truncated music"); t.file = file.slice(offset,offset+t.size,t.type); offset += t.size; }
+  }
+  if (data.full && offset !== file.size) throw new Error("Unexpected data");
+  return data;
+}
+function uniquePlaylistName(name, used) {
+  const base = String(name || "Restored playlist").slice(0,70); let result = base, n=2;
+  while (used.has(result.toLocaleLowerCase())) result = base + " (" + n++ + ")";
+  used.add(result.toLocaleLowerCase()); return result;
+}
+async function restoreBackup(file) {
+  const data = await readBackup(file);
+  const all = library(), byHash = new Map(), mapping = new Map(), added = [];
+  for (const t of all) { t.fingerprint ||= await fingerprint(t.file); byHash.set(t.fingerprint,t); }
+  for (const entry of data.tracks) {
+    let match = byHash.get(entry.fingerprint);
+    if (!match && data.full) {
+      if (await fingerprint(entry.file) !== entry.fingerprint) throw new Error("Damaged music data");
+      match = {id:newId(),title:entry.title,artist:typeof entry.artist === "string" ? entry.artist : "",album:typeof entry.album === "string" ? entry.album : "",
+        fingerprint:entry.fingerprint,removed:true,file:new File([entry.file],entry.name,{type:entry.type})};
+      added.push(match); byHash.set(match.fingerprint,match);
+    }
+    if (match) mapping.set(entry.id,match.id);
+  }
+  const remap = item => ({id:newId(),name:item.name,order:[...new Set(item.order.map(id => mapping.get(id)).filter(Boolean))],resumeId:mapping.get(item.resumeId),resumeTime:Number.isFinite(item.resumeTime) ? Math.max(0,item.resumeTime) : 0});
+  const current = remap(data.current);
+  const used = new Set(savedPlaylists.map(p => p.name.toLocaleLowerCase()));
+  const restored = data.savedPlaylists.map(item => ({...remap(item),name:uniquePlaylistName(item.name,used)}));
+  // One transaction adds songs and applies membership. Existing audio is never deleted.
+  const combined = [...all,...added], wanted = new Set(current.order);
+  await changeFiles(store => combined.forEach(t => store.put({...t,removed:!wanted.has(t.id)})));
+  combined.forEach(t => { t.removed = !wanted.has(t.id); });
+  const lookup = new Map(combined.map(t => [t.id,t]));
+  tracks = current.order.map(id => lookup.get(id)); removedTracks = combined.filter(t => t.removed);
+  savedPlaylists.push(...restored); following = false; resumeId = wanted.has(current.resumeId) ? current.resumeId : tracks[0]?.id;
+  resumeTime = resumeId === current.resumeId ? current.resumeTime : 0; playlistName = current.name; orderBeforeShuffle = null;
+  repeatPlaylist = data.repeatPlaylist === true; shuffleOnLoop = data.shuffleOnLoop === true;
+  libraryView = "active"; searchText = ""; byId("search").value = "";
+  if (!currentId && resumeId) select(resumeId,{follow:true,at:resumeTime});
+  save(); render(); indexDetails(added);
+  return data.tracks.length-mapping.size;
+}
+byId("backup-file").onchange = async event => {
+  const file = event.target.files[0]; event.target.value = "";
+  if (!file || libraryBusy) return;
+  libraryBusy = true; byId("import").disabled = true;
+  status("Checking and restoring your backup…");
+  try {
+    const missing = await restoreBackup(file);
+    byId("backup-menu").close();
+    status("Backup restored." + (missing ? " " + missing + " song(s) missing. Import those songs, then restore this playlist backup again." : ""));
+  } catch { status("Could not restore this backup. It may be incomplete, invalid, or larger than the available storage. Your existing music was kept."); }
+  finally { libraryBusy = false; byId("import").disabled = false; render(); }
+};
+initialize();

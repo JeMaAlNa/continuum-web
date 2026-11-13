@@ -11,9 +11,9 @@
 <link rel="manifest" href="./manifest.webmanifest">
 <link rel="apple-touch-icon" href="./icon-192.png">
 <link rel="icon" href="./icon-192.png">
-<link rel="stylesheet" href="./player.css?v=7">
-<script defer src="./tags.js?v=7"></script>
-<script defer src="./player.js?v=7"></script>
+<link rel="stylesheet" href="./player.css?v=8">
+<script defer src="./tags.js?v=8"></script>
+<script defer src="./player.js?v=8"></script>
 </head>
 <body>
 <div id="continuum-web">
@@ -47,23 +47,57 @@
       </div>
       <button type="button" id="resume" class="cp-resume" hidden>▶ Resume playlist</button>
       <div class="cp-list-head">
-        <div><h3>Playlist</h3><span class="cp-small" id="count">0 tracks</span></div>
+        <div><h3 id="playlist-name">Playlist</h3><span class="cp-small" id="count">0 tracks</span></div>
         <button type="button" id="playlist-options" aria-haspopup="dialog" aria-controls="playlist-menu">⋯ Playlist options</button>
       </div>
+      <label class="cp-search-label" for="search">Search music</label>
+      <input type="search" id="search" placeholder="Title, artist or album" autocomplete="off">
+      <div class="cp-tabs" role="group" aria-label="Library view"><button type="button" id="active-tab" aria-pressed="true">Playlist</button><button type="button" id="removed-tab" aria-pressed="false">Removed (0)</button></div>
       <div class="cp-list" id="playlist"></div>
       <div class="cp-message" id="status" role="status">Opening your library…</div>
       <details class="cp-help"><summary>Add to your iPhone Home Screen</summary><p>In Safari, tap Share, then Add to Home Screen. Imported music stays on this device. Keep the original files in Files.</p></details>
     </main>
     <dialog id="playlist-menu" aria-labelledby="playlist-menu-title">
       <h3 id="playlist-menu-title">Playlist options</h3>
+      <button type="button" id="sort-az">Sort A–Z</button>
       <button type="button" id="shuffle-now" disabled>Shuffle playlist</button>
       <button type="button" id="restore-order" disabled>Restore previous order</button>
       <button type="button" id="repeat-playlist" aria-pressed="false">Repeat playlist: Off</button>
+      <button type="button" id="shuffle-loop" aria-pressed="false">Shuffle on loop: Off</button>
+      <button type="button" id="saved-open">Saved playlists</button>
+      <button type="button" id="backup-open">Backup and restore</button>
       <form method="dialog"><button>Done</button></form>
     </dialog>
     <dialog id="track-menu"><h3 id="menu-title">Track options</h3>
       <button type="button" id="move-up">Move up</button><button type="button" id="move-down">Move down</button>
       <button type="button" id="mark-track">Set resume marker</button><button type="button" id="remove-track">Remove from playlist</button>
+      <form method="dialog"><button>Done</button></form>
+    </dialog>
+    <dialog id="saved-menu" aria-labelledby="saved-title">
+      <h3 id="saved-title">Saved playlists</h3>
+      <p class="cp-small">Save an arrangement and resume position. Songs stay in your library.</p>
+      <label for="saved-select">Choose a playlist</label><select id="saved-select" size="4" aria-label="Saved playlists"></select>
+      <button type="button" id="saved-load">Load selected playlist</button>
+      <button type="button" id="saved-update">Update selected from current playlist</button>
+      <button type="button" id="saved-rename">Rename selected playlist</button>
+      <button type="button" id="saved-delete">Delete selected playlist</button>
+      <button type="button" id="saved-new">Save current as…</button>
+      <form method="dialog"><button>Done</button></form>
+    </dialog>
+    <dialog id="name-menu" aria-labelledby="name-title"><form id="name-form">
+      <h3 id="name-title">Save playlist</h3><label for="playlist-input">Playlist name</label>
+      <input id="playlist-input" maxlength="80" required autocomplete="off">
+      <p id="name-error" class="cp-small" role="status"></p>
+      <button type="submit">Save</button><button type="button" id="name-cancel">Cancel</button>
+    </form></dialog>
+    <dialog id="backup-menu" aria-labelledby="backup-title">
+      <h3 id="backup-title">Backup and restore</h3>
+      <p class="cp-small">A playlist backup saves order, saved playlists and resume positions. Restore it after importing the same songs. A full backup also includes all music, including Removed songs, and can be large.</p>
+      <button type="button" id="backup-small">Download playlist backup</button>
+      <button type="button" id="backup-full">Download full music backup</button>
+      <button type="button" id="backup-restore">Restore a backup…</button>
+      <input type="file" id="backup-file" accept=".continuum,.json,application/json,application/octet-stream" hidden>
+      <p class="cp-small">Restore adds music and saved playlists. It restores the backed-up order and settings. Existing music is kept in the library.</p>
       <form method="dialog"><button>Done</button></form>
     </dialog>
     <audio id="audio" preload="metadata"></audio>
