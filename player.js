@@ -29,38 +29,41 @@ let trackTags = {};
 let artworkUrl;
 let metadataRequest = 0;
 
-function status(message) { byId("status").textContent = message; }
+function status(message) {
+  byId("status").textContent = message;
+  byId("player-status").textContent = message;
+}
+let mediaWorkerReady = false;
+let sourceGeneration = 0;
+let playbackTimer;
+let recoveryTask;
+let libraryLoaded = false;
+let lastHidden = 0;
+let playerFailure = false;
+let recoveringAudio = false;
+let fallbackFiles = new Map();
+function showRecovery(message) {
+  playerFailure = true; clearTimeout(playbackTimer);
+  status(message); byId("recovery").hidden = false;
+}
+function clearRecovery() { playerFailure = false; byId("recovery").hidden = true; }
+
 function time(seconds) {
   if (!Number.isFinite(seconds)) return "0:00";
   const whole = Math.floor(seconds);
   return Math.floor(whole / 60) + ":" + String(whole % 60).padStart(2, "0");
 }
 
-function openLibrary() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open("ContinuumWeb", 1);
-    request.onupgradeneeded = () => request.result.createObjectStore("tracks", { keyPath: "id" });
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-    request.onblocked = () => reject(new Error("Library is open in another tab"));
-  });
-}
-
-function listFiles() {
-  return new Promise((resolve, reject) => {
-    const request = database.transaction("tracks").objectStore("tracks").getAll();
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-function changeFiles(change) {
-  return new Promise((resolve, reject) => {
-    const transaction = database.transaction("tracks", "readwrite");
-    transaction.oncomplete = resolve;
-    transaction.onabort = () => reject(transaction.error);
-    change(transaction.objectStore("tracks"));
-  });
+function openLibrary() { return ContinuumStorage.open(); }
+function listFiles() { return ContinuumStorage.list(); }
+async function changeFiles(change) {
+  const operations = [];
+  change({add:track => operations.push({kind:"add",track}),put:track => operations.push({kind:"put",track})});
+  const updated = await ContinuumStorage.write(operations);
+  for (const track of updated) {
+    const existing = library().find(t => t.id === track.id);
+    if (existing) { existing.file = track.file; existing.audio = track.audio; }
+  }
 }
 
 function save() {
@@ -150,10 +153,40 @@ function render() {
 }
 
 function play() {
-  audio.play().catch((error) => {
-    if (error.name === "AbortError") return;
-    status(error.name === "NotAllowedError" ? "Tap Play to continue." : "This file could not play. Try an MP3, AAC/M4A, or WAV file.");
-  });
+  const generation = sourceGeneration;
+  if (playerFailure && !recoveringAudio) { recoverPlayback(true); return; }
+  clearTimeout(playbackTimer);
+  playbackTimer = setTimeout(() => {
+    if (generation === sourceGeneration && (audio.paused || audio.readyState < 2)) showRecovery("Playback did not start. Tap Recover playback. Your library will be kept.");
+  },12000);
+  let attempt;
+  try { attempt = audio.play(); } catch (failure) { handlePlayError(failure,generation); return; }
+  Promise.resolve(attempt).then(() => {
+    if (generation !== sourceGeneration) return;
+    clearTimeout(playbackTimer); clearRecovery(); status("");
+  }).catch(failure => handlePlayError(failure,generation));
+}
+function handlePlayError(failure,generation) {
+  if (generation !== sourceGeneration || failure.name === "AbortError") return;
+  clearTimeout(playbackTimer);
+  if (failure.name === "NotAllowedError") { status("Tap Play to continue."); return; }
+  showRecovery("Playback stopped responding. Tap Recover playback to reload the saved audio without deleting songs.");
+}
+function attachSource(track, options, generation) {
+  if (generation !== sourceGeneration) return;
+  clearTimeout(playbackTimer);
+  const previous = sourceUrl;
+  if (mediaWorkerReady) {
+    sourceUrl = undefined;
+    audio.src = new URL("./__audio/" + encodeURIComponent(track.id) + "?session="+generation,location.href).href;
+  } else {
+    const file = fallbackFiles.get(track.id) || track.file;
+    sourceUrl = URL.createObjectURL(file); audio.src = sourceUrl;
+  }
+  audio.load();
+  if (previous) URL.revokeObjectURL(previous);
+  renderTime(); renderPlay();
+  if (options.play) play();
 }
 
 function showView(lyrics) {
@@ -186,7 +219,11 @@ async function loadTags(file) {
   showTags({}, file ? "Reading track details…" : "");
   if (!file) return;
   let tags = {};
-  try { tags = await ContinuumTags.parse(file); } catch {}
+  try { tags = await ContinuumTags.parse(file); }
+  catch {
+    if (request === metadataRequest) { showTags({},"Saved track details could not be read"); showRecovery("Some saved audio could not be read. Tap Recover playback or repair the original song from Files."); }
+    return;
+  }
   if (request !== metadataRequest) return;
   showTags(tags);
   const track = library().find(t => t.id === currentId);
@@ -210,13 +247,11 @@ function select(id, options = {}) {
   savePosition(true);
   const track = library().find((item) => item.id === id);
   if (!track) return;
-  const oldUrl = sourceUrl;
+  const generation = ++sourceGeneration;
   following = Boolean(options.follow);
   currentId = id;
   pendingSeek = options.at || null;
-  sourceUrl = URL.createObjectURL(track.file);
-  audio.src = sourceUrl;
-  if (oldUrl) URL.revokeObjectURL(oldUrl);
+  clearRecovery();
   if (following) {
     resumeId = id;
     resumeTime = options.at || 0;
@@ -225,7 +260,14 @@ function select(id, options = {}) {
   status("");
   loadTags(track.file);
   render();
-  if (options.play) play();
+  if (!mediaWorkerReady && track.file.isStoredAudio && !fallbackFiles.has(id)) {
+    audio.pause();
+    status("Loading saved audio…");
+    ContinuumStorage.materialize(track.file).then(file => {
+      if (generation !== sourceGeneration) return;
+      fallbackFiles.clear(); fallbackFiles.set(id,file); attachSource(track,options,generation);
+    }).catch(() => { if (generation === sourceGeneration) showRecovery("Saved audio could not be read. Tap Recover playback, or repair this song from Files."); });
+  } else attachSource(track,options,generation);
 }
 
 function setMarker(id) {
@@ -411,14 +453,25 @@ audio.addEventListener("loadedmetadata", () => {
   renderTime();
 });
 audio.addEventListener("timeupdate", () => { renderTime(); savePosition(); });
-audio.addEventListener("pause", () => { renderPlay(); savePosition(true); });
-audio.addEventListener("playing", renderPlay);
+audio.addEventListener("pause", () => { clearTimeout(playbackTimer); renderPlay(); savePosition(true); });
+audio.addEventListener("playing", () => { clearTimeout(playbackTimer); clearRecovery(); renderPlay(); });
 audio.addEventListener("ended", advance);
 audio.addEventListener("error", () => {
-  if (currentId) status("This device could not open the selected audio file.");
+  if (currentId) showRecovery("Saved audio is unavailable to the player. Tap Recover playback; do not delete the app.");
+});
+audio.addEventListener("stalled", () => {
+  if (currentId && !audio.paused) {
+    clearTimeout(playbackTimer);
+    const generation = sourceGeneration;
+    playbackTimer = setTimeout(() => { if (generation === sourceGeneration) showRecovery("Playback is stuck. Tap Recover playback to reconnect to your saved music."); },12000);
+  }
 });
 window.addEventListener("pagehide", () => savePosition(true));
-document.addEventListener("visibilitychange", () => { if (document.hidden) savePosition(true); });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { savePosition(true); lastHidden = Date.now(); }
+  else if (lastHidden && Date.now()-lastHidden > 30000 && (audio.paused || audio.error)) recoverPlayback(false);
+});
+window.addEventListener("pageshow", event => { if (event.persisted) recoverPlayback(false); });
 
 function move(delta) {
   if (libraryBusy) return;
@@ -446,42 +499,46 @@ byId("remove-track").onclick = async () => {
   finally { libraryBusy = false; }
 };
 
+function restoreSession(stored) {
+  tracks = stored.filter(t => !t.removed);
+  removedTracks = stored.filter(t => t.removed);
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(stateKey)) || {}; } catch {}
+  sortByOrder(Array.isArray(saved.order) ? saved.order : []);
+  orderBeforeShuffle = Array.isArray(saved.orderBeforeShuffle) && saved.orderBeforeShuffle.length ? saved.orderBeforeShuffle : null;
+  repeatPlaylist = saved.repeatPlaylist === true;
+  shuffleOnLoop = saved.shuffleOnLoop === true;
+  savedPlaylists = Array.isArray(saved.savedPlaylists) ? saved.savedPlaylists.filter(validPlaylist) : [];
+  playlistName = typeof saved.playlistName === "string" ? saved.playlistName : "Playlist";
+  resumeId = tracks.some(track => track.id === saved.resumeId) ? saved.resumeId : tracks[0]?.id;
+  resumeTime = resumeId === saved.resumeId && Number.isFinite(saved.resumeTime) ? Math.max(0,saved.resumeTime) : 0;
+  libraryLoaded = true;
+}
+
 async function initialize() {
   try {
+    await setupOffline();
     database = await openLibrary();
     const stored = await listFiles();
-    tracks = stored.filter(t => !t.removed);
-    removedTracks = stored.filter(t => t.removed);
-    let saved = {};
-    try { saved = JSON.parse(localStorage.getItem(stateKey)) || {}; } catch {}
-    sortByOrder(Array.isArray(saved.order) ? saved.order : []);
-    orderBeforeShuffle = Array.isArray(saved.orderBeforeShuffle) && saved.orderBeforeShuffle.length ? saved.orderBeforeShuffle : null;
-    repeatPlaylist = saved.repeatPlaylist === true;
-    shuffleOnLoop = saved.shuffleOnLoop === true;
-    savedPlaylists = Array.isArray(saved.savedPlaylists) ? saved.savedPlaylists.filter(validPlaylist) : [];
-    playlistName = typeof saved.playlistName === "string" ? saved.playlistName : "Playlist";
+    restoreSession(stored);
     if (tracks.length) {
-      resumeId = tracks.some((track) => track.id === saved.resumeId) ? saved.resumeId : tracks[0].id;
-      resumeTime = resumeId === saved.resumeId && Number.isFinite(saved.resumeTime) ? Math.max(0, saved.resumeTime) : 0;
       select(resumeId, { follow: true, at: resumeTime });
     } else status("No music yet. Tap Import to add your first tracks.");
     byId("import").disabled = false;
     render();
     indexDetails(library());
-  } catch { status("Continuum could not open device storage. Try Safari outside Private Browsing."); }
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
+  } catch (failure) { showRecovery(failure.name === "StorageBlocked" ? failure.message : "Continuum could not reconnect to saved music. Tap Recover playback. Do not delete the app or clear website data."); }
+
 }
 
 
 // Library metadata is scanned one file at a time to keep artwork memory bounded.
-function persistDetails(track) {
-  return changeFiles(store => {
-    const request = store.get(track.id);
-    request.onsuccess = () => {
-      if (request.result) store.put({...request.result,title:track.title,artist:track.artist,album:track.album,detailsRead:true});
-    };
-  });
+async function persistDetails(track) {
+  // Convert legacy audio once, then only patch small text fields.
+  if (!track.file.isStoredAudio) await changeFiles(store => store.put(track));
+  return ContinuumStorage.write([{kind:"patch",id:track.id,patch:{title:track.title,artist:track.artist,album:track.album,detailsRead:true}}]);
 }
+
 function applyDetails(track, tags) {
   if (tags.title) track.title = tags.title;
   track.artist = tags.artist || "";
@@ -493,7 +550,13 @@ function indexDetails(items) {
   detailQueue = detailQueue.then(async () => {
     let scanned = 0;
     for (const track of items) {
-      if (track.detailsRead) continue;
+      if (track.detailsRead) {
+        if (!track.file.isStoredAudio) {
+          try { await changeFiles(store => store.put(track)); }
+          catch { if (track.id === currentId) showRecovery("This song's saved audio could not be copied safely. Use Repair music from Files if playback fails."); }
+        }
+        continue;
+      }
       try {
         applyDetails(track, await ContinuumTags.parse(track.file));
         await persistDetails(track);
@@ -677,7 +740,9 @@ async function exportBackup(full) {
         fingerprint:t.fingerprint,name:t.file.name || t.title + ".audio",type:t.file.type,size:t.file.size}))};
     const header = new TextEncoder().encode(JSON.stringify(data));
     if (header.length > 16*1024*1024) throw new Error("Backup index too large");
-    const blob = full ? new Blob([backupMagic, String(header.length)+"\n",header,...all.map(t => t.file)],{type:"application/octet-stream"})
+    const audioParts = [];
+    if (full) for (const track of all) audioParts.push(await ContinuumStorage.materialize(track.file));
+    const blob = full ? new Blob([backupMagic, String(header.length)+"\n",header,...audioParts],{type:"application/octet-stream"})
       : new Blob([header],{type:"application/json"});
     download(blob, "Continuum-" + (full ? "music" : "playlists") + "-" + new Date().toISOString().slice(0,10) + (full ? ".continuum" : ".json"));
     status("Backup prepared. Save the download in Files.");
@@ -763,6 +828,104 @@ byId("backup-file").onchange = async event => {
     byId("backup-menu").close();
     status("Backup restored." + (missing ? " " + missing + " song(s) missing. Import those songs, then restore this playlist backup again." : ""));
   } catch { status("Could not restore this backup. It may be incomplete, invalid, or larger than the available storage. Your existing music was kept."); }
+  finally { libraryBusy = false; byId("import").disabled = false; render(); }
+};
+
+async function checkMediaWorker(controller = navigator.serviceWorker?.controller) {
+  if (!controller || typeof MessageChannel === "undefined") return false;
+  return new Promise(resolve => {
+    const channel = new MessageChannel();
+    let settled = false;
+    const done = value => { if (settled) return; settled = true; clearTimeout(timer); channel.port1.close(); resolve(value); };
+    const timer = setTimeout(() => done(false),1200);
+    channel.port1.onmessage = event => done(event.data?.version >= 9);
+    try { controller.postMessage({type:"CONTINUUM_MEDIA"},[channel.port2]); } catch { done(false); }
+  });
+}
+let offlineSetup = false;
+async function setupOffline() {
+  if (!("serviceWorker" in navigator)) return;
+  mediaWorkerReady = await checkMediaWorker();
+  if (offlineSetup) return;
+  offlineSetup = true;
+  navigator.serviceWorker.addEventListener("controllerchange", async () => { mediaWorkerReady = await checkMediaWorker(); });
+  navigator.serviceWorker.register("./sw.js",{updateViaCache:"none"}).then(registration => registration.update()).catch(() => {});
+  // Feature-detect: persistence requests are unavailable on some iOS 16 versions.
+  if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
+}
+async function recoverPlayback(shouldPlay = false) {
+  if (recoveryTask) return recoveryTask;
+  if (libraryBusy) { showRecovery("Finish the current import or backup, then tap Recover playback."); return; }
+  const selectedId = currentId || resumeId;
+  const position = pendingSeek ?? (Number.isFinite(audio.currentTime) ? audio.currentTime : resumeTime);
+  const wasFollowing = following;
+  const order = tracks.map(track => track.id);
+  const generation = ++sourceGeneration;
+  recoveryTask = (async () => {
+    recoveringAudio = true;
+    libraryBusy = true; byId("recover-playback").disabled = true;
+    status("Reconnecting to saved music. Your library is being kept…");
+    try {
+      savePosition(true);
+      following = false;
+      audio.pause(); audio.removeAttribute("src"); audio.load();
+      ContinuumStorage.disconnect();
+      database = await openLibrary();
+      const stored = await listFiles();
+      if (generation !== sourceGeneration) return;
+      if (!libraryLoaded) restoreSession(stored);
+      else { tracks = stored.filter(t => !t.removed); removedTracks = stored.filter(t => t.removed); sortByOrder(order); }
+      const selected = library().find(t => t.id === (selectedId || resumeId)) || tracks[0];
+      if (!selected) {
+        showRecovery("No saved audio was found in this installation. Restore a full backup if you have one. Do not delete Continuum."); return;
+      }
+      // Rebuild a single song from bytes to bypass stale browser File and media resources.
+      const fresh = await ContinuumStorage.materialize(selected.file);
+      if (generation !== sourceGeneration) return;
+      fallbackFiles.clear(); fallbackFiles.set(selected.id,fresh);
+      const useWorker = mediaWorkerReady; mediaWorkerReady = false;
+      try { select(selected.id,{follow:wasFollowing || !selectedId,at:selected.id === selectedId ? position : selected.id === resumeId ? resumeTime : 0,play:shouldPlay}); }
+      finally { mediaWorkerReady = useWorker; }
+      clearRecovery();
+      if (!shouldPlay) status("Saved audio reconnected. Tap Play to continue.");
+    } catch (failure) {
+      showRecovery(failure.name === "StorageBlocked" ? failure.message : "Saved audio could not be reopened. Try closing and reopening Continuum without deleting it. If this song still fails, use Repair music from Files to keep its playlist position.");
+    } finally {
+      recoveringAudio = false; libraryBusy = false; byId("recover-playback").disabled = false;
+      recoveryTask = undefined; render();
+    }
+  })();
+  return recoveryTask;
+}
+byId("recover-playback").onclick = () => recoverPlayback(true);
+byId("recover-open").onclick = () => { playlistMenu.close(); recoverPlayback(false); };
+byId("repair-music").onclick = () => byId("repair-files").click();
+byId("repair-open").onclick = () => { playlistMenu.close(); byId("repair-files").click(); };
+byId("repair-files").onchange = async event => {
+  const files = Array.from(event.target.files); event.target.value = "";
+  if (!files.length || libraryBusy) return;
+  libraryBusy = true; byId("import").disabled = true;
+  const oldId = currentId, oldPosition = pendingSeek ?? audio.currentTime, oldFollowing = following;
+  let repaired = 0, skipped = 0;
+  try {
+    status("Checking original files and repairing saved copies…");
+    if (!libraryLoaded) { database = await openLibrary(); restoreSession(await listFiles()); }
+    for (const file of files) {
+      const hash = await fingerprint(file);
+      let matches = library().filter(t => t.fingerprint === hash);
+      if (!matches.length) matches = library().filter(t => !t.fingerprint && t.file.name === file.name && t.file.size === file.size);
+      if (!matches.length) { skipped++; continue; }
+      for (const track of matches) {
+        const replacement = {...track,file,fingerprint:hash,detailsRead:false};
+        await changeFiles(store => store.put(replacement));
+        Object.assign(track,replacement); repaired++;
+      }
+    }
+    fallbackFiles.clear();
+    if (repaired && oldId) select(oldId,{follow:oldFollowing,at:oldPosition});
+    save(); render(); clearRecovery();
+    status("Repaired " + repaired + " saved song(s). Playlist order and saved playlists were kept." + (skipped ? " " + skipped + " unmatched file(s) skipped." : "") + (repaired ? " Tap Play to continue." : " Select the same original audio files."));
+  } catch { showRecovery("Repair could not finish. Already saved music and playlist positions were kept. Try fewer files or check available space."); }
   finally { libraryBusy = false; byId("import").disabled = false; render(); }
 };
 initialize();

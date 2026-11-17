@@ -11,9 +11,10 @@
 <link rel="manifest" href="./manifest.webmanifest">
 <link rel="apple-touch-icon" href="./icon-192.png">
 <link rel="icon" href="./icon-192.png">
-<link rel="stylesheet" href="./player.css?v=8">
-<script defer src="./tags.js?v=8"></script>
-<script defer src="./player.js?v=8"></script>
+<link rel="stylesheet" href="./player.css?v=9">
+<script defer src="./storage.js?v=9"></script>
+<script defer src="./tags.js?v=9"></script>
+<script defer src="./player.js?v=9"></script>
 </head>
 <body>
 <div id="continuum-web">
@@ -45,6 +46,9 @@
         <button type="button" class="cp-play" id="play" aria-label="Play" disabled>▶</button>
         <button type="button" class="cp-icon" id="next" aria-label="Next track" disabled>▶│</button>
       </div>
+      <div id="player-status" class="cp-player-status" role="status" aria-live="polite"></div>
+      <div id="recovery" class="cp-recovery" hidden><button type="button" id="recover-playback">Recover playback</button><button type="button" id="repair-music">Repair music from Files…</button><p class="cp-small">Your playlist and songs are kept. If a saved song is unreadable, select its original file to repair it in place.</p></div>
+      <input id="repair-files" type="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.flac,.aiff,.aif,.ogg,.opus,.caf" multiple hidden>
       <button type="button" id="resume" class="cp-resume" hidden>▶ Resume playlist</button>
       <div class="cp-list-head">
         <div><h3 id="playlist-name">Playlist</h3><span class="cp-small" id="count">0 tracks</span></div>
@@ -55,7 +59,7 @@
       <div class="cp-tabs" role="group" aria-label="Library view"><button type="button" id="active-tab" aria-pressed="true">Playlist</button><button type="button" id="removed-tab" aria-pressed="false">Removed (0)</button></div>
       <div class="cp-list" id="playlist"></div>
       <div class="cp-message" id="status" role="status">Opening your library…</div>
-      <details class="cp-help"><summary>Add to your iPhone Home Screen</summary><p>In Safari, tap Share, then Add to Home Screen. Imported music stays on this device. Keep the original files in Files.</p></details>
+      <details class="cp-help"><summary>Add to your iPhone Home Screen</summary><p>In Safari, tap Share, then Add to Home Screen. Imported music stays on this device. Keep the original files in Files.</p><p>Version 9 · offline playback recovery</p></details>
     </main>
     <dialog id="playlist-menu" aria-labelledby="playlist-menu-title">
       <h3 id="playlist-menu-title">Playlist options</h3>
@@ -65,6 +69,8 @@
       <button type="button" id="repeat-playlist" aria-pressed="false">Repeat playlist: Off</button>
       <button type="button" id="shuffle-loop" aria-pressed="false">Shuffle on loop: Off</button>
       <button type="button" id="saved-open">Saved playlists</button>
+      <button type="button" id="recover-open">Recover playback</button>
+      <button type="button" id="repair-open">Repair music from Files…</button>
       <button type="button" id="backup-open">Backup and restore</button>
       <form method="dialog"><button>Done</button></form>
     </dialog>
