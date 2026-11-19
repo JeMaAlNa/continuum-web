@@ -34,6 +34,7 @@ function status(message) {
   byId("player-status").textContent = message;
 }
 let mediaWorkerReady = false;
+let mediaWorkerVersion = 0;
 let sourceGeneration = 0;
 let playbackTimer;
 let recoveryTask;
@@ -866,13 +867,14 @@ byId("backup-file").onchange = async event => {
 };
 
 async function checkMediaWorker(controller = navigator.serviceWorker?.controller) {
+  mediaWorkerVersion = 0;
   if (!controller || typeof MessageChannel === "undefined") return false;
   return new Promise(resolve => {
     const channel = new MessageChannel();
     let settled = false;
     const done = value => { if (settled) return; settled = true; clearTimeout(timer); channel.port1.close(); resolve(value); };
     const timer = setTimeout(() => done(false),1200);
-    channel.port1.onmessage = event => done(event.data?.version >= 9);
+    channel.port1.onmessage = event => { mediaWorkerVersion = event.data?.version || 0; done(mediaWorkerVersion >= 9); };
     try { controller.postMessage({type:"CONTINUUM_MEDIA"},[channel.port2]); } catch { done(false); }
   });
 }
@@ -1017,6 +1019,18 @@ function warmPlayback() {
   });
 }
 const mediaArtworkCache = new WeakMap();
+async function localArtworkURL(descriptor) {
+  const response = await fetch(descriptor.src);
+  const bytes = await response.arrayBuffer();
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const key = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+  const src = new URL("./__cover/" + key, document.baseURI).href;
+  const cache = await caches.open("continuum-lock-art");
+  await cache.put(src, new Response(bytes, {headers: {"Content-Type": descriptor.type}}));
+  const keys = (await cache.keys()).filter(request => request.url !== src);
+  for (const request of keys.slice(0, Math.max(0, keys.length - 15))) await cache.delete(request);
+  return {...descriptor, src};
+}
 async function makeMediaArtwork(art) {
   // The native lock screen must not depend on a page-scoped blob URL remaining readable.
   // Decode, letterbox and downsize the cover without cropping the source artwork.
@@ -1060,16 +1074,24 @@ function getMediaArtwork(art) {
       if (trackTags.art === art) publishMediaMetadata(trackTags);
     }).catch(failure => { nativeArtworkStatus = "Cover preparation failed: " + failure.name; renderNativeDiagnostics(); });
   }
+  if (mediaWorkerVersion >= 13 && entry.value && !entry.localPending) {
+    entry.localPending = true;
+    localArtworkURL(entry.value).then(value => {
+      entry.local = value;
+      if (trackTags.art === art) publishMediaMetadata(trackTags);
+    }).catch(() => { entry.localPending = false; });
+  }
   return entry;
 }
 function publishMediaMetadata(tags = trackTags) {
   if (!navigator.mediaSession || typeof MediaMetadata === "undefined") return;
   const track = library().find(item => item.id === currentId);
   if (!track) return;
-  const descriptor = tags.art ? getMediaArtwork(tags.art).value : undefined;
+  const entry = tags.art ? getMediaArtwork(tags.art) : undefined;
+  const descriptor = (mediaWorkerVersion >= 13 && entry?.local) || entry?.value;
   const artwork = descriptor ? [descriptor] : [{src:"./icon-512.png",sizes:"512x512",type:"image/png"}];
   const fields = {title:tags.title || track.title,artist:tags.artist || track.artist || "",album:tags.album || track.album || "",artwork};
-  nativeArtworkStatus = descriptor ? "Cover prepared (" + (descriptor.sizes || "original size") + ")" : tags.art ? "Preparing cover" : "No embedded cover; using app icon";
+  nativeArtworkStatus = descriptor ? "Cover prepared (" + (descriptor.sizes || "original size") + "). " + (descriptor === entry?.local ? "Using local image URL" : "Using inline image") : tags.art ? "Preparing cover" : "No embedded cover; using app icon";
   const preview = byId("native-art-preview");
   preview.hidden = !descriptor;
   if (descriptor && preview.src !== descriptor.src) preview.src = descriptor.src;

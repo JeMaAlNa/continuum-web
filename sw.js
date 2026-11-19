@@ -1,7 +1,7 @@
 "use strict";
-importScripts("./storage.js?v=12");
-const cacheName = "continuum-web-v12";
-const assets = ["./", "./index.html", "./player.css?v=12", "./storage.js?v=12", "./tags.js?v=12", "./player.js?v=12", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
+importScripts("./storage.js?v=13");
+const cacheName = "continuum-web-v13";
+const assets = ["./", "./index.html", "./player.css?v=13", "./storage.js?v=13", "./tags.js?v=13", "./player.js?v=13", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
 self.addEventListener("install", event => {
   event.waitUntil(caches.open(cacheName).then(cache => cache.addAll(assets)).then(() => self.skipWaiting()));
 });
@@ -10,7 +10,7 @@ self.addEventListener("activate", event => {
   event.waitUntil(self.clients.claim());
 });
 self.addEventListener("message", event => {
-  if (event.data?.type === "CONTINUUM_MEDIA") event.ports[0]?.postMessage({version:12});
+  if (event.data?.type === "CONTINUUM_MEDIA") event.ports[0]?.postMessage({version:13});
 });
 function parseRange(header,size) {
   if (!header) return {start:0,end:size,status:200};
@@ -55,6 +55,12 @@ self.addEventListener("fetch", event => {
   const root = new URL("./",self.location.href);
   if (url.pathname.startsWith(new URL("./__audio/",root).pathname)) {
     event.respondWith(localAudio(request,url)); return;
+  }
+  const coverPath = new URL("./__cover/", root).pathname;
+  if (request.method === "GET" && url.pathname.startsWith(coverPath)) {
+    event.respondWith(caches.open("continuum-lock-art").then(async cache =>
+      (await cache.match(request)) || new Response(null, {status: 404})));
+    return;
   }
   if (request.method !== "GET") return;
   if (request.mode === "navigate" && [root.pathname,new URL("./index.html",root).pathname].includes(url.pathname)) {
