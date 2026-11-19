@@ -172,6 +172,7 @@ function play() {
   Promise.resolve(attempt).then(() => {
     if (generation !== sourceGeneration) return;
     clearTimeout(playbackTimer); clearRecovery(); status("");
+    refreshMediaSession();
   }).catch(failure => handlePlayError(failure,generation));
 }
 function handlePlayError(failure,generation) {
@@ -482,6 +483,7 @@ audio.addEventListener("pause", () => { sourcePlaying=false; clearTimeout(playba
 audio.addEventListener("playing", () => {
   sourcePlaying = true;
   clearTimeout(playbackTimer); clearRecovery(); renderPlay(); warmPlayback();
+  refreshMediaSession();
 });
 audio.addEventListener("waiting", () => { sourcePlaying = false; updateMediaPosition(); });
 audio.addEventListener("seeking", () => { sourcePlaying = false; updateMediaPosition(); });
@@ -1056,7 +1058,7 @@ function getMediaArtwork(art) {
       entry.value = value;
       // Publish the CURRENT song's text, even when several songs share the same cover.
       if (trackTags.art === art) publishMediaMetadata(trackTags);
-    }).catch(() => {});
+    }).catch(failure => { nativeArtworkStatus = "Cover preparation failed: " + failure.name; renderNativeDiagnostics(); });
   }
   return entry;
 }
@@ -1066,10 +1068,22 @@ function publishMediaMetadata(tags = trackTags) {
   if (!track) return;
   const descriptor = tags.art ? getMediaArtwork(tags.art).value : undefined;
   const artwork = descriptor ? [descriptor] : [{src:"./icon-512.png",sizes:"512x512",type:"image/png"}];
+  const fields = {title:tags.title || track.title,artist:tags.artist || track.artist || "",album:tags.album || track.album || "",artwork};
+  nativeArtworkStatus = descriptor ? "Cover prepared (" + (descriptor.sizes || "original size") + ")" : tags.art ? "Preparing cover" : "No embedded cover; using app icon";
+  const preview = byId("native-art-preview");
+  preview.hidden = !descriptor;
+  if (descriptor && preview.src !== descriptor.src) preview.src = descriptor.src;
   try {
-    navigator.mediaSession.metadata = new MediaMetadata({title:tags.title || track.title,artist:tags.artist || track.artist || "",album:tags.album || track.album || "",artwork});
+    // Avoid replacing a correctly loaded metadata image on every play/playing callback.
+    if (!lastNativeFields || lastNativeFields.title !== fields.title || lastNativeFields.artist !== fields.artist || lastNativeFields.album !== fields.album || lastNativeFields.src !== artwork[0].src || !navigator.mediaSession.metadata) {
+      navigator.mediaSession.metadata = new MediaMetadata(fields);
+      lastNativeFields = {...fields,src:artwork[0].src};
+    }
+    nativeMetadataError = "";
     updateMediaPosition();
-  } catch {} // Unsupported system controls must never stop local playback.
+    if (sourcePlaying && !audio.paused) setupMediaSession();
+  } catch (failure) { nativeMetadataError = failure.name + ": " + String(failure.message || "Metadata was rejected").slice(0,160); }
+  renderNativeDiagnostics();
 }
 
 function resetMediaPosition() {
@@ -1091,23 +1105,63 @@ function systemSeek(position) {
   audio.currentTime = Math.min(audio.duration,Math.max(0,position));
   pendingSeek = null; renderTime(); savePosition(true); updateMediaPosition();
 }
+let nativeSetupCount = 0;
+let nativeActionErrors = [];
+let nativeMetadataError = "";
+let nativeArtworkStatus = "Waiting for a song";
+let nativeLastAction = "No lock-screen button received yet";
+let lastNativeFields;
+let lastNativeTrack;
+function renderNativeDiagnostics() {
+  const node = byId("native-diagnostics");
+  if (!node) return;
+  node.textContent = !navigator.mediaSession ? "This browser does not expose lock-screen controls." :
+    "Song-control refreshes: " + nativeSetupCount + ". " + nativeArtworkStatus + ". " + nativeLastAction +
+    (nativeActionErrors.length ? ". Control errors: " + nativeActionErrors.join("; ") : "") +
+    (nativeMetadataError ? ". Artwork/metadata error: " + nativeMetadataError : "");
+}
+function refreshMediaSession(force = false) {
+  if (!navigator.mediaSession || !currentId) return;
+  if (force || lastNativeTrack !== currentId) {
+    try { navigator.mediaSession.metadata = null; } catch {}
+    lastNativeFields = undefined;
+    lastNativeTrack = currentId;
+  }
+  publishMediaMetadata(trackTags);
+  setupMediaSession();
+  nativeSetupCount++;
+  renderNativeDiagnostics();
+}
 function setupMediaSession() {
-  // Newer browsers expose this; iOS 16 safely ignores the absent API.
   try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch {}
   if (!navigator.mediaSession) return;
+  nativeActionErrors = [];
   const handlers = {
-    play:() => { if (currentId) play(); else resume(); },
-    pause:() => { audio.pause(); sourcePlaying=false; updateMediaPosition(); },
-    nexttrack:() => skipTrack(1),
-    previoustrack:() => skipTrack(-1),
-    seekto:details => { if (Number.isFinite(details.seekTime)) systemSeek(details.seekTime); },
+    // Clear seeking first; register the desired song commands last, after audio is active.
     seekforward:null,
     seekbackward:null,
-    stop:() => { audio.pause(); sourcePlaying=false; updateMediaPosition(); }
+    play:() => { if (currentId) play(); else resume(); },
+    pause:() => { audio.pause(); sourcePlaying=false; updateMediaPosition(); },
+    seekto:details => { if (Number.isFinite(details.seekTime)) systemSeek(details.seekTime); },
+    stop:() => { audio.pause(); sourcePlaying=false; updateMediaPosition(); },
+    previoustrack:() => skipTrack(-1),
+    nexttrack:() => skipTrack(1)
   };
   for (const [action,handler] of Object.entries(handlers)) {
-    try { navigator.mediaSession.setActionHandler(action,handler); } catch {}
+    const wrapped = handler ? details => {
+      nativeLastAction = "Last lock-screen button: " + ({nexttrack:"next song",previoustrack:"previous song",play:"play",pause:"pause",seekto:"progress bar",stop:"stop"}[action] || action);
+      renderNativeDiagnostics(); handler(details);
+    } : null;
+    try { navigator.mediaSession.setActionHandler(action,wrapped); }
+    catch (failure) { nativeActionErrors.push(action + " (" + failure.name + ")"); }
   }
+  renderNativeDiagnostics();
 }
+byId("native-refresh").onclick = () => {
+  refreshMediaSession(true);
+  status("Lock-screen artwork and song controls reapplied. Try the lock-screen buttons again.");
+};
+byId("native-art-preview").onerror = () => { nativeArtworkStatus = "Prepared cover failed to display in the app preview"; renderNativeDiagnostics(); };
+
 setupMediaSession();
 initialize();
