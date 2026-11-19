@@ -46,8 +46,6 @@ let preparedPlayback = new Map();
 let preparingPlayback = new Map();
 let plannedLoop;
 let sourcePlaying = false;
-let mediaArtworkUrl;
-let retiredMediaArtwork = [];
 let currentSourceTrack;
 
 function showRecovery(message) {
@@ -994,6 +992,7 @@ async function preparePlaybackTrack(id) {
     const file = await ContinuumStorage.materialize(source);
     let tags = {};
     try { tags = await ContinuumTags.parse(file); } catch {}
+    if (tags.art && navigator.mediaSession) getMediaArtwork(tags.art);
     if (!sameAudioSource(library().find(item => item.id === id)?.file,source)) return;
     const entry = {source,file,tags};
     if (playbackCandidates().includes(id)) preparedPlayback.set(id,entry);
@@ -1015,23 +1014,64 @@ function warmPlayback() {
     if (wanted.join("|") !== playbackCandidates().join("|")) warmPlayback();
   });
 }
-let mediaArtworkSource;
+const mediaArtworkCache = new WeakMap();
+async function makeMediaArtwork(art) {
+  // The native lock screen must not depend on a page-scoped blob URL remaining readable.
+  // Decode, letterbox and downsize the cover without cropping the source artwork.
+  if (typeof Image !== "undefined") {
+    const image = new Image();
+    const url = URL.createObjectURL(art);
+    try {
+      await new Promise((resolve,reject) => {
+        const timer = setTimeout(() => reject(new Error("Artwork decode timed out")),5000);
+        image.onload = () => { clearTimeout(timer); resolve(); };
+        image.onerror = () => { clearTimeout(timer); reject(new Error("Artwork decode failed")); };
+        image.src = url;
+      });
+      const canvas = document.createElement("canvas"); canvas.width = 512; canvas.height = 512;
+      const context = canvas.getContext("2d");
+      const width = image.naturalWidth || image.width, height = image.naturalHeight || image.height;
+      if (!context || !width || !height) throw new Error("Artwork has no pixels");
+      context.fillStyle = "#141718"; context.fillRect(0,0,512,512);
+      const scale = Math.min(512/width,512/height);
+      context.drawImage(image,(512-width*scale)/2,(512-height*scale)/2,width*scale,height*scale);
+      const src = canvas.toDataURL("image/jpeg",0.9);
+      if (!src.startsWith("data:image/jpeg;base64,")) throw new Error("Artwork encoding failed");
+      return {src,sizes:"512x512",type:"image/jpeg"};
+    } catch {} finally { image.onload = null; image.onerror = null; URL.revokeObjectURL(url); }
+  }
+  // Canvas can be unavailable. Preserve original bytes as a self-contained image instead.
+  const bytes = new Uint8Array(await art.arrayBuffer());
+  let binary = "";
+  for (let offset=0;offset<bytes.length;offset+=32768) binary += String.fromCharCode(...bytes.subarray(offset,offset+32768));
+  const type = art.type || "image/jpeg";
+  return {src:"data:"+type+";base64,"+btoa(binary),type};
+}
+function getMediaArtwork(art) {
+  let entry = mediaArtworkCache.get(art);
+  if (!entry) {
+    entry = {};
+    mediaArtworkCache.set(art,entry);
+    entry.promise = makeMediaArtwork(art).then(value => {
+      entry.value = value;
+      // Publish the CURRENT song's text, even when several songs share the same cover.
+      if (trackTags.art === art) publishMediaMetadata(trackTags);
+    }).catch(() => {});
+  }
+  return entry;
+}
 function publishMediaMetadata(tags = trackTags) {
   if (!navigator.mediaSession || typeof MediaMetadata === "undefined") return;
   const track = library().find(item => item.id === currentId);
   if (!track) return;
+  const descriptor = tags.art ? getMediaArtwork(tags.art).value : undefined;
+  const artwork = descriptor ? [descriptor] : [{src:"./icon-512.png",sizes:"512x512",type:"image/png"}];
   try {
-    if (tags.art !== mediaArtworkSource) {
-      if (mediaArtworkUrl) retiredMediaArtwork.push(mediaArtworkUrl);
-      mediaArtworkSource = tags.art;
-      mediaArtworkUrl = tags.art ? URL.createObjectURL(tags.art) : undefined;
-      while (retiredMediaArtwork.length>4) URL.revokeObjectURL(retiredMediaArtwork.shift());
-    }
-    const artwork = mediaArtworkUrl ? [{src:mediaArtworkUrl,type:tags.art.type}] : [{src:"./icon-512.png",sizes:"512x512",type:"image/png"}];
     navigator.mediaSession.metadata = new MediaMetadata({title:tags.title || track.title,artist:tags.artist || track.artist || "",album:tags.album || track.album || "",artwork});
     updateMediaPosition();
   } catch {} // Unsupported system controls must never stop local playback.
 }
+
 function resetMediaPosition() {
   if (!navigator.mediaSession) return;
   try { navigator.mediaSession.playbackState = "paused"; navigator.mediaSession.setPositionState?.(); } catch {}
@@ -1061,8 +1101,8 @@ function setupMediaSession() {
     nexttrack:() => skipTrack(1),
     previoustrack:() => skipTrack(-1),
     seekto:details => { if (Number.isFinite(details.seekTime)) systemSeek(details.seekTime); },
-    seekforward:details => systemSeek(audio.currentTime+(details.seekOffset || 10)),
-    seekbackward:details => systemSeek(audio.currentTime-(details.seekOffset || 10)),
+    seekforward:null,
+    seekbackward:null,
     stop:() => { audio.pause(); sourcePlaying=false; updateMediaPosition(); }
   };
   for (const [action,handler] of Object.entries(handlers)) {
