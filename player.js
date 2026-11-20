@@ -1067,12 +1067,13 @@ function publishMediaMetadata(tags = trackTags) {
   const track = library().find(item => item.id === currentId);
   if (!track) return;
   const descriptor = tags.art ? getMediaArtwork(tags.art).value : undefined;
-  const artwork = descriptor ? [descriptor] : [{src:"./icon-512.png",sizes:"512x512",type:"image/png"}];
+  const artwork = testHostedCover ? [hostedTestArtwork] : descriptor ? [descriptor] : [{src:"./icon-512.png",sizes:"512x512",type:"image/png"}];
   const fields = {title:tags.title || track.title,artist:tags.artist || track.artist || "",album:tags.album || track.album || "",artwork};
-  nativeArtworkStatus = descriptor ? "Cover prepared (" + (descriptor.sizes || "original size") + ")" : tags.art ? "Preparing cover" : "No embedded cover; using app icon";
+  nativeArtworkStatus = testHostedCover ? "Using public Sintel test cover" : descriptor ? "Cover prepared (" + (descriptor.sizes || "original size") + ")" : tags.art ? "Preparing cover" : "No embedded cover; using app icon";
   const preview = byId("native-art-preview");
-  preview.hidden = !descriptor;
-  if (descriptor && preview.src !== descriptor.src) preview.src = descriptor.src;
+  const previewCover = testHostedCover ? hostedTestArtwork : descriptor;
+  preview.hidden = !previewCover;
+  if (previewCover && preview.src !== previewCover.src) preview.src = previewCover.src;
   try {
     // Avoid replacing a correctly loaded metadata image on every play/playing callback.
     if (!lastNativeFields || lastNativeFields.title !== fields.title || lastNativeFields.artist !== fields.artist || lastNativeFields.album !== fields.album || lastNativeFields.src !== artwork[0].src || !navigator.mediaSession.metadata) {
@@ -1111,6 +1112,8 @@ let nativeMetadataError = "";
 let nativeArtworkStatus = "Waiting for a song";
 let nativeLastAction = "No lock-screen button received yet";
 let lastNativeFields;
+let testHostedCover = false;
+const hostedTestArtwork = {src:"https://chrome.dev/media-session/sintel/artwork-512.png",sizes:"512x512",type:"image/png"};
 let lastNativeTrack;
 function renderNativeDiagnostics() {
   const node = byId("native-diagnostics");
@@ -1160,6 +1163,13 @@ function setupMediaSession() {
 byId("native-refresh").onclick = () => {
   refreshMediaSession(true);
   status("Lock-screen artwork and song controls reapplied. Try the lock-screen buttons again.");
+};
+byId("native-test-cover").onclick = () => {
+  if (!currentId || audio.paused) { status("Start playing a song before testing the cover."); return; }
+  testHostedCover = !testHostedCover;
+  byId("native-test-cover").setAttribute("aria-pressed", String(testHostedCover));
+  byId("native-test-cover").textContent = testHostedCover ? "Use song cover again" : "Test public cover";
+  publishMediaMetadata();
 };
 byId("native-art-preview").onerror = () => { nativeArtworkStatus = "Prepared cover failed to display in the app preview"; renderNativeDiagnostics(); };
 
