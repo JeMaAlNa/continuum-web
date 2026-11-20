@@ -35,6 +35,7 @@ function status(message) {
 }
 let mediaWorkerReady = false;
 let sourceGeneration = 0;
+let startedSourceGeneration = -1;
 let playbackTimer;
 let recoveryTask;
 let libraryLoaded = false;
@@ -172,6 +173,7 @@ function play() {
   Promise.resolve(attempt).then(() => {
     if (generation !== sourceGeneration) return;
     clearTimeout(playbackTimer); clearRecovery(); status("");
+    startedSourceGeneration = generation;
     refreshMediaSession();
   }).catch(failure => handlePlayError(failure,generation));
 }
@@ -482,6 +484,7 @@ audio.addEventListener("timeupdate", () => { renderTime(); savePosition(); updat
 audio.addEventListener("pause", () => { sourcePlaying=false; clearTimeout(playbackTimer); renderPlay(); savePosition(true); });
 audio.addEventListener("playing", () => {
   sourcePlaying = true;
+  startedSourceGeneration = sourceGeneration;
   clearTimeout(playbackTimer); clearRecovery(); renderPlay(); warmPlayback();
   refreshMediaSession();
 });
@@ -1067,13 +1070,17 @@ function publishMediaMetadata(tags = trackTags) {
   const track = library().find(item => item.id === currentId);
   if (!track) return;
   const descriptor = tags.art ? getMediaArtwork(tags.art).value : undefined;
-  const artwork = testHostedCover ? [hostedTestArtwork] : descriptor ? [descriptor] : [{src:"./icon-512.png",sizes:"512x512",type:"image/png"}];
+  const artwork = testHostedCover ? hostedTestArtwork : descriptor ? [descriptor] : [{src:"./icon-512.png",sizes:"512x512",type:"image/png"}];
   const fields = {title:tags.title || track.title,artist:tags.artist || track.artist || "",album:tags.album || track.album || "",artwork};
   nativeArtworkStatus = testHostedCover ? "Using public Sintel test cover" : descriptor ? "Cover prepared (" + (descriptor.sizes || "original size") + ")" : tags.art ? "Preparing cover" : "No embedded cover; using app icon";
   const preview = byId("native-art-preview");
-  const previewCover = testHostedCover ? hostedTestArtwork : descriptor;
+  const previewCover = testHostedCover ? hostedTestArtwork[5] : descriptor;
   preview.hidden = !previewCover;
   if (previewCover && preview.src !== previewCover.src) preview.src = previewCover.src;
+  if (startedSourceGeneration !== sourceGeneration || (!testHostedCover && tags.art && !descriptor)) {
+    renderNativeDiagnostics();
+    return;
+  }
   try {
     // Avoid replacing a correctly loaded metadata image on every play/playing callback.
     if (!lastNativeFields || lastNativeFields.title !== fields.title || lastNativeFields.artist !== fields.artist || lastNativeFields.album !== fields.album || lastNativeFields.src !== artwork[0].src || !navigator.mediaSession.metadata) {
@@ -1082,7 +1089,6 @@ function publishMediaMetadata(tags = trackTags) {
     }
     nativeMetadataError = "";
     updateMediaPosition();
-    if (sourcePlaying && !audio.paused) setupMediaSession();
   } catch (failure) { nativeMetadataError = failure.name + ": " + String(failure.message || "Metadata was rejected").slice(0,160); }
   renderNativeDiagnostics();
 }
@@ -1113,7 +1119,11 @@ let nativeArtworkStatus = "Waiting for a song";
 let nativeLastAction = "No lock-screen button received yet";
 let lastNativeFields;
 let testHostedCover = false;
-const hostedTestArtwork = {src:"https://chrome.dev/media-session/sintel/artwork-512.png",sizes:"512x512",type:"image/png"};
+const hostedTestArtwork = [96,128,192,256,384,512].map(size => ({
+  src: "https://chrome.dev/media-session/sintel/artwork-" + size + ".png",
+  sizes: size + "x" + size,
+  type: "image/png"
+}));
 let lastNativeTrack;
 function renderNativeDiagnostics() {
   const node = byId("native-diagnostics");
@@ -1126,7 +1136,6 @@ function renderNativeDiagnostics() {
 function refreshMediaSession(force = false) {
   if (!navigator.mediaSession || !currentId) return;
   if (force || lastNativeTrack !== currentId) {
-    try { navigator.mediaSession.metadata = null; } catch {}
     lastNativeFields = undefined;
     lastNativeTrack = currentId;
   }
