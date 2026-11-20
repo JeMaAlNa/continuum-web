@@ -1,7 +1,7 @@
 "use strict";
-importScripts("./storage.js?v=16");
+importScripts("./storage.js?v=17");
 const cacheName = "continuum-web-v14";
-const assets = ["./", "./index.html", "./player.css?v=16", "./storage.js?v=16", "./tags.js?v=16", "./player.js?v=16", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
+const assets = ["./", "./index.html", "./player.css?v=17", "./storage.js?v=17", "./tags.js?v=17", "./player.js?v=17", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
 self.addEventListener("install", event => {
   event.waitUntil(caches.open(cacheName).then(cache => cache.addAll(assets)).then(() => self.skipWaiting()));
 });
@@ -10,7 +10,7 @@ self.addEventListener("activate", event => {
   event.waitUntil(self.clients.claim());
 });
 self.addEventListener("message", event => {
-  if (event.data?.type === "CONTINUUM_MEDIA") event.ports[0]?.postMessage({version:16});
+  if (event.data?.type === "CONTINUUM_MEDIA") event.ports[0]?.postMessage({version:17});
 });
 function parseRange(header,size) {
   if (!header) return {start:0,end:size,status:200};
