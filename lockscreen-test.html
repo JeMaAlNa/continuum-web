@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Continuum lock-screen artwork test</title>
+<h1>Lock-screen artwork test</h1>
+<p>Choose a source, tap Play, then lock the phone. In both tests, look for the Sintel cover. Pause playback before switching sources.</p>
+<button id="sample">Play public demo audio</button>
+<p><label>Or choose a song from Files <input id="file" type="file" accept="audio/*,.mp3,.m4a"></label></p>
+<button id="local" disabled>Play selected file</button>
+<p id="status" role="status"></p>
+<audio id="audio" controls preload="none"></audio>
+<script>
+"use strict";
+const audio = document.getElementById("audio");
+const picker = document.getElementById("file");
+const local = document.getElementById("local");
+const status = document.getElementById("status");
+const base = "https://chrome.dev/media-session/sintel/";
+let fileURL;
+let attempt = 0;
+
+async function play(source, label) {
+  const current = ++attempt;
+  audio.src = source;
+  try {
+    await audio.play();
+    if (current !== attempt) return;
+    if (!navigator.mediaSession) throw new Error("Media Session is unavailable");
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: label,
+      artist: "Continuum artwork test",
+      artwork: [96, 128, 192, 256, 384, 512].map(size => ({
+        src: base + "artwork-" + size + ".png",
+        sizes: size + "x" + size,
+        type: "image/png"
+      }))
+    });
+    status.textContent = label + " is playing. Lock the phone and check for Sintel.";
+  } catch (error) {
+    if (current === attempt) status.textContent = error.message || "Playback failed.";
+  }
+}
+
+document.getElementById("sample").onclick = () => play(base + "snow-fight.mp3", "Public demo audio");
+picker.onchange = () => { local.disabled = !picker.files.length; };
+local.onclick = () => {
+  if (!picker.files.length) return;
+  const previous = fileURL;
+  fileURL = URL.createObjectURL(picker.files[0]);
+  play(fileURL, "Local file audio");
+  if (previous) URL.revokeObjectURL(previous);
+};
+</script>
+</html>
